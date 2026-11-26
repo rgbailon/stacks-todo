@@ -11,6 +11,10 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // Listen on all interfaces so the Arena preview proxy can reach the dev
+    // server, and allow its {port}-{sandboxId}.e2b.app host header.
+    host: "0.0.0.0",
+    allowedHosts: true,
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
