@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:ipc": "node scripts/check-ipc.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.5",

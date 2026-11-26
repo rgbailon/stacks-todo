@@ -18,6 +18,10 @@ export class ApiError extends Error {
   }
 }
 
+// Tauri resolves each command argument by the Rust parameter name converted to
+// camelCase (the `#[tauri::command]` default is `rename_all = "camelCase"`):
+// a Rust `project_id` must be sent as `projectId`, and single-word names must
+// match the Rust signature exactly (`update_note` takes `input`, not `patch`).
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   try {
     return await invoke<T>(cmd, args);
@@ -36,14 +40,14 @@ class ProjectService {
 }
 
 class TaskService {
-  create(projectId: string, title: string): Promise<TaskDTO> { return call("create_task", { project_id: projectId, title }); }
+  create(projectId: string, title: string): Promise<TaskDTO> { return call("create_task", { projectId, title }); }
   update(id: string, patch: TaskPatch): Promise<TaskDTO> { return call("update_task", { id, patch }); }
   remove(id: string): Promise<{ ok: boolean }> { return call("delete_task", { id }).then(() => ({ ok: true })); }
 }
 
 class NoteService {
-  create(projectId: string, input: NoteInput): Promise<NoteDTO> { return call("create_note", { project_id: projectId, input }); }
-  update(id: string, patch: NoteInput): Promise<NoteDTO> { return call("update_note", { id, patch }); }
+  create(projectId: string, input: NoteInput): Promise<NoteDTO> { return call("create_note", { projectId, input }); }
+  update(id: string, patch: NoteInput): Promise<NoteDTO> { return call("update_note", { id, input: patch }); }
   remove(id: string): Promise<{ ok: boolean }> { return call("delete_note", { id }).then(() => ({ ok: true })); }
 }
 
@@ -51,7 +55,7 @@ class IdeaService {
   list(): Promise<IdeaDTO[]> { return call("list_ideas"); }
   capture(text: string): Promise<IdeaDTO> { return call("capture_idea", { text }); }
   remove(id: string): Promise<{ ok: boolean }> { return call("delete_idea", { id }).then(() => ({ ok: true })); }
-  sendToProject(id: string, projectId: string): Promise<NoteDTO> { return call("send_idea_to_project", { idea_id: id, project_id: projectId }); }
+  sendToProject(id: string, projectId: string): Promise<NoteDTO> { return call("send_idea_to_project", { ideaId: id, projectId }); }
 }
 
 class FocusService {
