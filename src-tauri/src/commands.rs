@@ -150,12 +150,6 @@ fn uuid() -> String {
     Uuid::new_v4().to_string()
 }
 
-fn map_project(row: &rusqlite::Row) -> rusqlite::Result<(String, String, String, String, String, String, String, String, String, Option<String>)> {
-    Ok((
-        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-        row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?,
-    ))
-}
 
 fn project_stats(conn: &Connection, id: &str) -> ProjectStats {
     let total: i64 = conn.query_row(
@@ -354,8 +348,6 @@ pub fn create_project(state: tauri::State<DbState>, input: ProjectInput) -> Resu
 pub fn update_project(state: tauri::State<DbState>, id: String, patch: ProjectPatch) -> Result<ProjectDto, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     // build dynamic update
-    let mut sets: Vec<String> = vec!["updated_at = ?1".to_string()];
-    let mut vals: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(ts())];
     // We'll handle fields by pushing with placeholders; simpler: do individual updates.
     // Use a sequential approach:
     if let Some(v) = &patch.title { let _ = conn.execute("UPDATE projects SET title = ?1, updated_at = ?2 WHERE id = ?3", params![v, ts(), id]); }
