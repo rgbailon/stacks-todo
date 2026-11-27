@@ -63,6 +63,10 @@ async function main() {
     const names = tools.map((t) => t.spec.name);
     assert(names.includes("create_project"), "create_project present");
     assert(names.includes("create_task"), "create_task present");
+    assert(names.includes("get_project"), "get_project present");
+    assert(names.includes("update_task"), "update_task present");
+    assert(names.includes("create_note"), "create_note present");
+    assert(names.includes("update_note"), "update_note present");
     assert(
       tools.every(
         (t) =>
@@ -73,32 +77,47 @@ async function main() {
       "every spec has name/description/object schema",
     );
     assert(SYSTEM_PROMPT.includes("Stacks"), "system prompt names the app");
+    assert(SYSTEM_PROMPT.includes("notes"), "system prompt explains notes");
 
     // ------------------------------------------------------- happy-path loop
-    console.log("\nHappy path: create project → create task → final reply:");
+    console.log("\nHappy path: create project → create task → create note → final reply:");
     const provider = new FakeProvider([
       { content: "", toolCalls: [{ id: "c1", name: "create_project", input: { title: "Agent test project", category: "idea" } }] },
       { content: "", toolCalls: [{ id: "c2", name: "create_task", input: { projectId: "p_1", title: "First small step" } }] },
-      { content: "Done — the project and its first task are in your Library.", toolCalls: [] },
+      {
+        content: "",
+        toolCalls: [
+          {
+            id: "c3",
+            name: "create_note",
+            input: { projectId: "p_1", title: "Parts list", content: "- GPU\n- RAM", pinned: true },
+          },
+        ],
+      },
+      { content: "Done — the project, task, and note are in your Library.", toolCalls: [] },
     ]);
     const events = [];
     const run = await runAgent({
       provider,
       history: [],
-      userText: "Create a project called Agent test project with one task",
+      userText: "Create a project called Agent test project with one task and a parts note",
       onTool: (e) => events.push(e),
     });
     assert(!run.error, `no error (got: ${run.error ?? "none"})`);
     assert(run.reply.startsWith("Done —"), "final reply returned");
-    assert(run.toolEvents.length === 2, "two tool events emitted");
-    assert(run.toolEvents.every((e) => e.ok), "both tools succeeded");
-    assert(events.length === 2, "onTool callback fired twice");
-    assert(run.turns.length === 6, `six turns (user + 2×(assistant,toolResult) + assistant), got ${run.turns.length}`);
+    assert(run.toolEvents.length === 3, "three tool events emitted");
+    assert(run.toolEvents.every((e) => e.ok), "all tools succeeded");
+    assert(events.length === 3, "onTool callback fired three times");
+    assert(run.turns.length === 8, `eight turns (user + 3×(assistant,toolResult) + assistant), got ${run.turns.length}`);
     assert(run.turns[0].role === "user", "starts with the user message");
     assert(run.turns[1].toolCalls?.[0]?.name === "create_project", "first assistant turn carries the tool call");
     assert(
       run.turns[2].role === "toolResult" && run.turns[2].content.includes("Created project"),
       "tool result carries the full result text",
+    );
+    assert(
+      run.turns[6].role === "toolResult" && run.turns[6].content.includes("Created note"),
+      "note tool result carries the full result text",
     );
     assert(
       provider.requests[0].tools.some((t) => t.name === "create_project"),
@@ -128,6 +147,50 @@ async function main() {
     assert(run2.toolEvents[0]?.summary.includes("title"), "error names the missing field");
     assert(run2.turns[2].content.startsWith("Error:"), "provider sees an Error: result");
     assert(run2.reply === "What should the project be called?", "model recovers with a question");
+
+    // -------------------------------------------------------- notes and tasks
+    console.log("\nNotes and task updates use the real Stacks tools:");
+    const runNote = await runAgent({
+      provider: new FakeProvider([
+        {
+          content: "",
+          toolCalls: [
+            {
+              id: "n1",
+              name: "create_note",
+              input: { projectId: "p_1", title: "Parts list", content: "- GPU\n- RAM", pinned: true },
+            },
+          ],
+        },
+        { content: "Saved the note.", toolCalls: [] },
+      ]),
+      history: [],
+      userText: "Write a parts note",
+    });
+    assert(runNote.toolEvents[0]?.ok, "create_note succeeded");
+    assert(runNote.toolEvents[0]?.summary.includes("Created note"), "note summary names the result");
+
+    const runTask = await runAgent({
+      provider: new FakeProvider([
+        { content: "", toolCalls: [{ id: "u1", name: "update_task", input: { taskId: "t_1", status: "done" } }] },
+        { content: "Marked it done.", toolCalls: [] },
+      ]),
+      history: [],
+      userText: "Mark the task done",
+    });
+    assert(runTask.toolEvents[0]?.ok, "update_task succeeded");
+    assert(runTask.toolEvents[0]?.summary.includes("done"), "task summary names the new status");
+
+    const runEmptyNote = await runAgent({
+      provider: new FakeProvider([
+        { content: "", toolCalls: [{ id: "n2", name: "create_note", input: { projectId: "p_1", title: "Empty", content: "  " } }] },
+        { content: "What should the note say?", toolCalls: [] },
+      ]),
+      history: [],
+      userText: "Write an empty note",
+    });
+    assert(runEmptyNote.toolEvents[0]?.ok === false, "empty note content is rejected");
+    assert(runEmptyNote.toolEvents[0]?.summary.includes("content"), "error names the missing content");
 
     // ------------------------------------------------------------ unknown tool
     console.log("\nUnknown tool names are rejected:");

@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { PromptLibrary } from "@/components/prompt-library";
 import { Button, Chip, EmptyState, Spinner, Textarea } from "@/components/ui";
 import { runAgent, type AgentToolEvent } from "@/lib/ai/agent";
-import { providersFromEnv, readAiEnv, type ChatProvider, type ChatTurn } from "@/lib/ai/providers";
+import { providersFromEnv, readAiEnv, type ChatProvider, type ChatTurn, type OpenCodeModel } from "@/lib/ai/providers";
 import { promptStore } from "@/lib/prompts";
 
 type Entry =
@@ -19,6 +19,7 @@ type Entry =
 
 const SUGGESTIONS = [
   "Plan a project: “Home lab refresh” with 5 tasks",
+  "Create “Home lab refresh” with a parts checklist note",
   "What projects are on my shelf right now?",
   "Turn “learn watercolor” into a project with small steps",
 ];
@@ -30,6 +31,16 @@ export default function ChatPage() {
   const providers = useMemo(() => providersFromEnv(env), [env]);
   const [providerId, setProviderId] = useState(() => providers[0]?.id ?? "");
   const provider: ChatProvider | null = providers.find((p) => p.id === providerId) ?? providers[0] ?? null;
+
+  const [models, setModels] = useState<OpenCodeModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try {
+      return localStorage.getItem("stacks.chat.model") || env.opencodeModel || "";
+    } catch {
+      return env.opencodeModel || "";
+    }
+  });
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
@@ -50,6 +61,49 @@ export default function ChatPage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [entries, busy]);
 
+  // Load the OpenCode server's model list when connected.
+  useEffect(() => {
+    if (!provider || provider.id !== "opencode" || !provider.listModels) {
+      setModels([]);
+      return;
+    }
+    let cancelled = false;
+    setModelsLoading(true);
+    provider
+      .listModels()
+      .then((list) => {
+        if (cancelled) return;
+        setModels(list.filter((m) => m.enabled));
+        // Default to the env model or the first enabled model.
+        setSelectedModel((prev) => {
+          if (prev && list.some((m) => m.id === prev)) return prev;
+          const fallback = env.opencodeModel && list.some((m) => m.id === env.opencodeModel)
+            ? env.opencodeModel
+            : list.find((m) => m.enabled)?.id ?? "";
+          return fallback;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setModels([]);
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, env.opencodeModel]);
+
+  // Persist the chosen model.
+  useEffect(() => {
+    try {
+      if (selectedModel) localStorage.setItem("stacks.chat.model", selectedModel);
+      else localStorage.removeItem("stacks.chat.model");
+    } catch {
+      /* ignore */
+    }
+  }, [selectedModel]);
+
   /** Drop a saved prompt into the composer (appending to anything already there). */
   const insertPrompt = (body: string) => {
     setInput((prev) => (prev ? `${prev}\n\n${body}` : body));
@@ -67,6 +121,7 @@ export default function ChatPage() {
         provider,
         history: turnsRef.current,
         userText: text,
+        model: provider.id === "opencode" ? selectedModel || null : null,
         onTool: (event: AgentToolEvent) =>
           setEntries((prev) => [...prev, { kind: "tool", name: event.name, ok: event.ok, summary: event.summary }]),
       });
@@ -102,7 +157,7 @@ export default function ChatPage() {
           <EmptyState
             icon={Bot}
             title="Connect an AI to start chatting"
-            body="Stacks talks to either Anthropic directly or your local OpenCode server. Configure one of them below and restart the dev server."
+            body="Stacks talks to either Anthropic directly or your local OpenCode server. Configure one of them below and restart the app."
           >
             <div className="mt-4 grid w-full max-w-3xl gap-3 text-left sm:grid-cols-2">
               <SetupCard
@@ -113,13 +168,15 @@ export default function ChatPage() {
               <SetupCard
                 title="OpenCode (local)"
                 lines={[
-                  "# 1. start the server:",
-                  "OPENCODE_SERVER_PASSWORD=… opencode serve --port 4096",
-                  "# 2. then point Stacks at it (.env):",
+                  "# 1. start the server (same password both sides):",
+                  "OPENCODE_PASSWORD=your-secret opencode serve --port 4096 --cors tauri://localhost --cors http://localhost:1420",
+                  "# 2. point Stacks at it (.env):",
                   "OPENCODE_SERVER_URL=http://127.0.0.1:4096",
-                  "OPENCODE_PASSWORD=…   # same value as above",
+                  "OPENCODE_PASSWORD=your-secret",
+                  "# optional model (provider/model):",
+                  "OPENCODE_MODEL=provider/model",
                 ]}
-                note="The app sends OPENCODE_PASSWORD as HTTP Basic (user “opencode”). Restart after saving .env; models come from whatever opencode has authenticated."
+                note="The app sends OPENCODE_PASSWORD as HTTP Basic (user “opencode”). Restart after saving .env; models come from whatever opencode has authenticated. Set OPENCODE_MODEL when the server default is not the one you want."
               />
             </div>
           </EmptyState>
@@ -135,7 +192,7 @@ export default function ChatPage() {
         <div>
           <h1 className="font-display text-3xl font-semibold text-ink sm:text-4xl">Chat</h1>
           <p className="mt-1.5 text-sm text-ink-soft">
-            Ask for projects and tasks — you&apos;ll see every tool call as it runs.
+            Ask for projects, tasks, and notes — you&apos;ll see every tool call as it runs.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -154,6 +211,24 @@ export default function ChatPage() {
             <span className="hidden text-[11px] text-ink-soft/70 sm:block" title={`Uses ${provider.hint}`}>
               via {provider.label}
             </span>
+          )}
+          {provider?.id === "opencode" && models.length > 0 && (
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              disabled={busy || modelsLoading}
+              className="rounded-full border border-line bg-card px-3 py-1 text-xs text-ink outline-none transition hover:border-ink/30 focus:border-ink/40 disabled:opacity-60"
+              title="Model used for this chat"
+            >
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.id})
+                </option>
+              ))}
+            </select>
+          )}
+          {provider?.id === "opencode" && modelsLoading && (
+            <span className="text-[11px] text-ink-soft/70">loading models…</span>
           )}
           <Button variant="ghost" size="sm" onClick={() => setLibraryOpen(true)}>
             <Bookmark size={13} /> Prompts
@@ -175,7 +250,7 @@ export default function ChatPage() {
             </div>
             <p className="mt-3 font-display text-lg font-semibold text-ink">What should we build?</p>
             <p className="mt-1 text-sm leading-relaxed text-ink-soft">
-              I can draft a project, break it into small tasks, or answer what&apos;s already on your shelf.
+              I can draft a project, break it into small tasks, write a note, or answer what&apos;s already on your shelf.
             </p>
             <div className="mt-4 flex flex-col gap-2">
               {SUGGESTIONS.map((s) => (

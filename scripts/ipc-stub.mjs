@@ -72,11 +72,20 @@ export async function invoke(cmd, args = {}) {
     case "list_ideas":
       return [];
     case "get_project":
-      return { project: projectDto(args.id, { title: "Stub project" }), tasks: [], notes: [] };
+      return {
+        project: projectDto(args.id, { title: "Stub project" }),
+        tasks: [taskDto("t_1", args.id, "Stub task")],
+        notes: [noteDto("n_1", args.id, { title: "Stub note", content: "Stub content", pinned: true })],
+      };
     case "create_project":
       return projectDto(`p_${Date.now().toString(36)}`, args.input);
     case "create_task":
       return taskDto(`t_${Date.now().toString(36)}`, args.projectId, args.title);
+    case "update_task":
+      return {
+        ...taskDto(args.id, "p_1", args.patch?.title ?? "Stub task"),
+        status: args.patch?.status ?? "todo",
+      };
     case "create_note":
     case "update_note":
       return noteDto("n_1", args.projectId ?? "p_1", args.input ?? args.patch);
