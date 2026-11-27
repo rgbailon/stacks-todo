@@ -274,10 +274,12 @@ class OpenCodeProvider implements ChatProvider {
 
       const failure = data.info?.error;
       if (failure) {
+        // Observed shape: { name: "APIError", data: { message: "…" } } — but
+        // keep the looser fallbacks for other server versions.
+        const nested = (failure as { data?: { message?: string } })?.data?.message;
+        const direct = (failure as { message?: string })?.message;
         throw new ProviderError(
-          typeof failure === "string"
-            ? failure
-            : ((failure as { message?: string })?.message ?? "The OpenCode session failed."),
+          typeof failure === "string" ? failure : nested ?? direct ?? "The OpenCode session failed.",
         );
       }
       const text = (data.parts ?? [])

@@ -98,12 +98,13 @@ export default function ChatPage() {
               <SetupCard
                 title="OpenCode (local)"
                 lines={[
-                  "# 1. run the server:  opencode serve",
+                  "# 1. start the server:",
+                  "OPENCODE_SERVER_PASSWORD=… opencode serve --port 4096",
+                  "# 2. then point Stacks at it (.env):",
                   "OPENCODE_SERVER_URL=http://127.0.0.1:4096",
-                  "OPENCODE_PASSWORD=…",
-                  "# optional: OPENCODE_MODEL=anthropic/claude-sonnet-4-5",
+                  "OPENCODE_PASSWORD=…   # same value as above",
                 ]}
-                note="Point at the URL opencode prints; the password is sent as HTTP Basic (user “opencode”). Restart after saving .env."
+                note="The app sends OPENCODE_PASSWORD as HTTP Basic (user “opencode”). Restart after saving .env; models come from whatever opencode has authenticated."
               />
             </div>
           </EmptyState>
