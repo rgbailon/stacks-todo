@@ -33,6 +33,8 @@ src/
 │   │   ├── providers.ts ← ChatProvider interface + Anthropic (direct) and
 │   │   │                  OpenCode (env-wrapped local server) transports
 │   │   └── agent.ts     ← system prompt, Stacks tools, the tool-calling loop
+│   ├── prompts.ts       ← PromptStore: saved prompt library (localStorage,
+│   │                      subscribable like ToastStore)
 │   ├── palettes.ts      ← CoverTheme + PALETTES (book-cover identities)
 │   ├── markdown.tsx     ← MarkdownParser class + safe <Markdown/> renderer (no deps)
 │   ├── toast.tsx        ← ToastStore class + <Toaster/> (useSyncExternalStore)
@@ -45,7 +47,8 @@ src/
     ├── project-card.tsx ← one book on the shelf
     ├── project-modal.tsx← create/edit with live cover preview
     ├── task-list.tsx    ← Now / Up next / Later / Done
-    └── notes.tsx        ← note cards + markdown editor modal
+    ├── notes.tsx        ← note cards + markdown editor modal
+    └── prompt-library.tsx ← saved-prompt CRUD modal used by Chat
 ```
 
 ## Key rules (where to change what)
