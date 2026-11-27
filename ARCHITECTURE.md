@@ -31,7 +31,7 @@ src/
 │   ├── services.ts      ← client API classes (BaseService → per-resource), exported as `api`
 │   ├── ai/
 │   │   ├── providers.ts ← ChatProvider interface + Anthropic (direct) and
-│   │   │                  OpenCode (env-wrapped local server) transports
+│   │   │                  OpenCode (env-wrapped local v2 server) transports
 │   │   └── agent.ts     ← system prompt, Stacks tools, the tool-calling loop
 │   ├── prompts.ts       ← PromptStore: saved prompt library (localStorage,
 │   │                      subscribable like ToastStore)
@@ -43,7 +43,7 @@ src/
 └── components/
     ├── ui.tsx           ← Button, Modal, Input, Chip, Progress, EmptyState…
     ├── cover.tsx        ← Cover art: palette gradient + deterministic SVG pattern
-    ├── shell.tsx        ← sidebar / mobile nav (Library · Focus · Inbox)
+    ├── shell.tsx        ← sidebar / mobile nav (Library · Focus · Inbox · Chat)
     ├── project-card.tsx ← one book on the shelf
     ├── project-modal.tsx← create/edit with live cover preview
     ├── task-list.tsx    ← Now / Up next / Later / Done

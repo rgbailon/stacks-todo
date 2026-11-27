@@ -10,6 +10,10 @@
  *    password from the env var — and only accepts known origins
  *    (localhost, tauri://localhost, …), so it works from the desktop app.
  *
+ *    The v2 HTTP API is used (`/api/session`, `/api/session/:id/prompt`,
+ *    `/api/experimental/session/:id/wait`). Older servers are rejected with
+ *    an upgrade hint rather than silently returning the web UI as JSON.
+ *
  * Providers never touch the app database; `lib/ai/agent.ts` owns the tools.
  */
 
@@ -37,6 +41,17 @@ export interface ProviderRequest {
   system: string;
   turns: ChatTurn[];
   tools: AgentToolSpec[];
+  /** Optional model override (OpenCode only); `providerID/modelID`. */
+  model?: string | null;
+}
+
+export interface OpenCodeModel {
+  /** Combined `providerID/modelID` (or `providerID/id`) identifier. */
+  id: string;
+  providerID: string;
+  modelID: string;
+  name: string;
+  enabled: boolean;
 }
 
 export interface ProviderReply {
@@ -50,6 +65,8 @@ export interface ChatProvider {
   /** Env var hint shown in the UI. */
   readonly hint: string;
   complete(request: ProviderRequest): Promise<ProviderReply>;
+  /** OpenCode only: list models the server can use. */
+  listModels?(): Promise<OpenCodeModel[]>;
 }
 
 export class ProviderError extends Error {
@@ -75,7 +92,7 @@ export function readAiEnv(): AiEnv {
     anthropicKey: env.ANTHROPIC_API_KEY?.trim() || null,
     anthropicModel: env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-5",
     opencodeUrl: env.OPENCODE_SERVER_URL?.trim().replace(/\/+$/, "") || null,
-    opencodePassword: env.OPENCODE_PASSWORD || null,
+    opencodePassword: env.OPENCODE_PASSWORD || env.OPENCODE_SERVER_PASSWORD || null,
     opencodeModel: env.OPENCODE_MODEL?.trim() || null,
   };
 }
@@ -179,44 +196,59 @@ function toAnthropicMessages(turns: ChatTurn[]): AnthropicMessage[] {
 // ------------------------------------------------------------------ opencode
 
 /**
- * The reply contract we force on the OpenCode session through JSON-schema
- * structured output (with a prose fallback if the server ignores `format`).
+ * The reply contract we force on the OpenCode session. The v2 API has no
+ * structured-output parameter, so the protocol is textual and `parseReply`
+ * is deliberately forgiving.
  */
-const REPLY_SCHEMA = {
-  type: "object",
-  properties: {
-    reply: { type: "string", description: "Message for the user; may be empty when calling tools" },
-    tool_calls: {
-      type: "array",
-      description: "Tools the host should run; empty when only replying",
-      items: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          input: { type: "object" },
-        },
-        required: ["name", "input"],
-      },
-    },
-  },
-  required: ["reply", "tool_calls"],
-  additionalProperties: false,
-};
-
 const OPENCODE_PROTOCOL = [
-  "You have no built-in tools — the host application runs the tool calls you request.",
-  "Reply with ONLY a single JSON object matching this schema, no markdown fences and no other text:",
+  "You have no built-in tools in this session — the host application runs any tool calls you request.",
+  "Reply with ONLY a single JSON object, no markdown fences and no other text:",
   '{"reply": string, "tool_calls": [{"name": string, "input": object}]}',
   '- "reply" is your message to the user (use "" when you are calling tools).',
   '- "tool_calls" is [] when you only want to reply.',
 ].join("\n");
 
+const OPENCODE_REQUEST_TIMEOUT_MS = 30_000;
+/** A slow local model may need minutes; the UI stays busy while it works. */
+const OPENCODE_WAIT_TIMEOUT_MS = 180_000;
+
+interface OpenCodeSessionResponse {
+  data?: { id?: string };
+  /** Older v2 builds returned the session at the top level. */
+  id?: string;
+}
+
+interface OpenCodeFailure {
+  message?: string;
+  type?: string;
+  status?: number;
+  retryAfterMs?: number;
+}
+
+interface OpenCodePart {
+  type?: string;
+  text?: string;
+}
+
+interface OpenCodeMessage {
+  type?: string;
+  text?: string;
+  content?: OpenCodePart[];
+  error?: OpenCodeFailure;
+  outcome?: string;
+  finish?: string;
+}
+
 class OpenCodeProvider implements ChatProvider {
   readonly id = "opencode" as const;
   readonly label = "OpenCode";
-  readonly hint = "OPENCODE_SERVER_URL · OPENCODE_PASSWORD";
+  readonly hint = "OPENCODE_SERVER_URL · OPENCODE_PASSWORD · OPENCODE_MODEL";
 
-  constructor(private readonly env: AiEnv) {}
+  private readonly baseUrl: string;
+
+  constructor(private readonly env: AiEnv) {
+    this.baseUrl = env.opencodeUrl ?? "";
+  }
 
   private headers(): Record<string, string> {
     const headers: Record<string, string> = { "content-type": "application/json" };
@@ -227,109 +259,188 @@ class OpenCodeProvider implements ChatProvider {
     return headers;
   }
 
-  private async req(path: string, init?: RequestInit): Promise<Response> {
-    const url = `${this.env.opencodeUrl}${path}`;
-    let res: Response;
+  /**
+   * One request with a hard timeout and a useful error. The OpenCode v2 API
+   * returns `{ data: … }` envelopes and `204` for the wait endpoint.
+   */
+  private async req<T>(path: string, init: RequestInit = {}, timeoutMs = OPENCODE_REQUEST_TIMEOUT_MS): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      res = await fetch(url, { ...init, headers: { ...this.headers(), ...(init?.headers ?? {}) } });
-    } catch {
-      throw new ProviderError(
-        `Could not reach the OpenCode server at ${this.env.opencodeUrl} — is \`opencode serve\` running?`,
-      );
+      let res: Response;
+      try {
+        res = await fetch(`${this.baseUrl}${path}`, {
+          ...init,
+          headers: { ...this.headers(), ...(init.headers ?? {}) },
+          signal: controller.signal,
+        });
+      } catch {
+        if (controller.signal.aborted) {
+          throw new ProviderError(`OpenCode did not answer within ${Math.round(timeoutMs / 1000)}s.`);
+        }
+        throw new ProviderError(
+          `Could not reach the OpenCode server at ${this.baseUrl} — is \`opencode serve\` running?`,
+        );
+      }
+      if (!res.ok) throw new ProviderError(await errorText(res, "OpenCode"));
+      if (res.status === 204) return undefined as T;
+      try {
+        return (await res.json()) as T;
+      } catch {
+        throw new ProviderError(
+          "OpenCode returned a non-JSON response — check that OPENCODE_SERVER_URL points at `opencode serve`.",
+        );
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) throw new ProviderError(await errorText(res, "OpenCode"));
-    return res;
   }
 
   async complete(request: ProviderRequest): Promise<ProviderReply> {
-    // Each turn is a short-lived session: create → prompt → read → delete.
-    const created = await this.req("/session", {
-      method: "POST",
-      body: JSON.stringify({ title: "Stacks Agent" }),
-    }).then((r) => r.json()) as { id?: string };
-    const sessionId = created.id;
-    if (!sessionId) throw new ProviderError("OpenCode server did not return a session id.");
-
+    // Each turn is a short-lived session: create → prompt → wait → read → delete.
+    const sessionId = await this.createSession(request.model ?? this.env.opencodeModel);
     try {
-      const body: Record<string, unknown> = {
-        system: `${request.system}\n\n${OPENCODE_PROTOCOL}`,
-        parts: [{ type: "text", text: renderConversation(request.turns, request.tools) }],
-        format: { type: "json_schema", schema: REPLY_SCHEMA },
-      };
-
-      // Best effort: switch off opencode's own coding tools — this chat must
-      // only ever act through the host app's Stacks tools.
-      const disabled = await this.listToolIds();
-      if (disabled) body.tools = disabled;
-      const model = parseModel(this.env.opencodeModel);
-      if (model) body.model = model;
-
-      const data = await this.req(`/session/${encodeURIComponent(sessionId)}/message`, {
+      await this.req(`/api/session/${encodeURIComponent(sessionId)}/prompt`, {
         method: "POST",
-        body: JSON.stringify(body),
-      }).then((r) => r.json()) as {
-        info?: { error?: unknown };
-        parts?: Array<{ type?: string; text?: string }>;
-      };
-
-      const failure = data.info?.error;
-      if (failure) {
-        // Observed shape: { name: "APIError", data: { message: "…" } } — but
-        // keep the looser fallbacks for other server versions.
-        const nested = (failure as { data?: { message?: string } })?.data?.message;
-        const direct = (failure as { message?: string })?.message;
-        throw new ProviderError(
-          typeof failure === "string" ? failure : nested ?? direct ?? "The OpenCode session failed.",
-        );
-      }
-      const text = (data.parts ?? [])
-        .filter((p) => p.type === "text")
-        .map((p) => p.text ?? "")
-        .join("");
-      return parseReply(text);
+        body: JSON.stringify({ text: renderConversation(request) }),
+      });
+      await this.req(
+        `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`,
+        { method: "POST" },
+        OPENCODE_WAIT_TIMEOUT_MS,
+      );
+      const messages = await this.readMessages(sessionId);
+      return replyFromMessages(messages);
     } finally {
-      // Leave no session litter behind; ignore cleanup failures.
-      fetch(`${this.env.opencodeUrl}/session/${encodeURIComponent(sessionId)}`, {
-        method: "DELETE",
-        headers: this.headers(),
-      }).catch(() => {});
+      this.deleteSession(sessionId);
     }
   }
 
-  /** `{ toolId: false }` map, or null when the server doesn't expose the list. */
-  private async listToolIds(): Promise<Record<string, boolean> | null> {
-    try {
-      const json = await this.req("/experimental/tool/ids").then((r) => r.json());
-      const ids = Array.isArray(json)
-        ? json
-        : Array.isArray((json as { ids?: unknown })?.ids)
-          ? ((json as { ids: string[] }).ids)
-          : [];
-      if (ids.length === 0) return null;
-      return Object.fromEntries(ids.map((id) => [String(id), false]));
-    } catch {
-      return null;
+  /** Models the connected OpenCode server can use. */
+  async listModels(): Promise<OpenCodeModel[]> {
+    const res = await this.req<{ data?: Array<Record<string, unknown>> }>("/api/model");
+    const rows = res.data ?? [];
+    const out: OpenCodeModel[] = [];
+    for (const row of rows) {
+      const providerID = String(row.providerID ?? "");
+      const modelID = String(row.modelID ?? row.id ?? "");
+      if (!providerID || !modelID) continue;
+      const enabled = row.enabled !== false && row.status !== "disabled";
+      out.push({
+        id: `${providerID}/${modelID}`,
+        providerID,
+        modelID,
+        name: String(row.name ?? modelID),
+        enabled,
+      });
     }
+    // Prefer enabled models; keep the list stable.
+    return out.sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return a.id.localeCompare(b.id);
+    });
+  }
+
+  private async createSession(modelValue: string | null = null): Promise<string> {
+    const body: Record<string, unknown> = {
+      title: "Stacks Agent",
+      // This chat must act only through the host app's Stacks tools. Deny the
+      // server-side agent every built-in tool so it cannot touch the machine.
+      permissions: [{ action: "*", resource: "*", effect: "deny" }],
+    };
+    const model = parseModel(modelValue ?? this.env.opencodeModel);
+    if (model) body.model = model;
+
+    try {
+      const created = await this.req<OpenCodeSessionResponse>("/api/session", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const id = created.data?.id ?? created.id;
+      if (!id) throw new ProviderError("OpenCode did not return a session id.");
+      return id;
+    } catch (e) {
+      if (e instanceof ProviderError && /\((404|405)\)/.test(e.message)) {
+        throw new ProviderError(
+          "This OpenCode server does not expose the v2 API. Update OpenCode (`opencode upgrade`) and restart `opencode serve`.",
+        );
+      }
+      throw e;
+    }
+  }
+
+  private async readMessages(sessionId: string): Promise<OpenCodeMessage[]> {
+    const res = await this.req<{ data?: OpenCodeMessage[] }>(
+      `/api/session/${encodeURIComponent(sessionId)}/message`,
+    );
+    return res.data ?? [];
+  }
+
+  private deleteSession(sessionId: string): void {
+    // Leave no session litter behind; ignore cleanup failures.
+    void fetch(`${this.baseUrl}/api/session/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    }).catch(() => {});
   }
 }
 
-function renderConversation(turns: ChatTurn[], tools: AgentToolSpec[]): string {
+function renderConversation(request: ProviderRequest): string {
   return [
+    request.system,
+    "",
+    OPENCODE_PROTOCOL,
+    "",
     "Conversation so far (JSON):",
-    JSON.stringify(turns),
+    JSON.stringify(request.turns),
     "",
     "Available tools (JSON):",
-    JSON.stringify(tools),
+    JSON.stringify(request.tools),
     "",
     "Choose tool_calls from the available tools (or []), then write your reply.",
   ].join("\n");
 }
 
-function parseModel(value: string | null): { providerID: string; modelID: string } | null {
+function parseModel(value: string | null): { providerID: string; id: string } | null {
   if (!value) return null;
   const slash = value.indexOf("/");
   if (slash <= 0 || slash === value.length - 1) return null;
-  return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) };
+  return { providerID: value.slice(0, slash), id: value.slice(slash + 1) };
+}
+
+function replyFromMessages(messages: OpenCodeMessage[]): ProviderReply {
+  const idle = [...messages].reverse().find((m) => m.type === "idle");
+  if (idle?.outcome === "failed") throw new ProviderError(openCodeFailure(idle.error));
+
+  const assistants = messages.filter((m) => m.type === "assistant");
+  const last = assistants[assistants.length - 1];
+  if (last?.error) throw new ProviderError(openCodeFailure(last.error));
+
+  const assistant = [...assistants]
+    .reverse()
+    .find((m) => (m.content ?? []).some((p) => p.type === "text" && p.text));
+  if (!assistant) throw new ProviderError("OpenCode finished without an assistant reply.");
+
+  const text = (assistant.content ?? [])
+    .filter((p) => p.type === "text")
+    .map((p) => p.text ?? "")
+    .join("");
+  return parseReply(text);
+}
+
+function openCodeFailure(error?: OpenCodeFailure): string {
+  if (!error) return "OpenCode could not complete the request.";
+  const message = error.message?.trim() || error.type || "Unknown error";
+  const sentence = message.endsWith(".") ? message : `${message}.`;
+  const status = error.status ? ` (${error.status})` : "";
+  const retry = error.retryAfterMs
+    ? ` Retry in about ${Math.max(1, Math.ceil(error.retryAfterMs / 60_000))} min.`
+    : "";
+  const modelHint =
+    error.type === "provider.free-limit" || error.status === 429
+      ? " Set OPENCODE_MODEL to a model your OpenCode install can use."
+      : "";
+  return `OpenCode error${status}: ${sentence}${retry}${modelHint}`;
 }
 
 function parseReply(text: string): ProviderReply {
@@ -382,8 +493,11 @@ function tryParseJson(text: string): unknown {
 
 async function errorText(res: Response, who: string): Promise<string> {
   try {
-    const json = (await res.json()) as { error?: { message?: string }; message?: string };
-    const message = json?.error?.message ?? json?.message;
+    const json = (await res.json()) as {
+      error?: { message?: string; data?: { message?: string } };
+      message?: string;
+    };
+    const message = json?.error?.message ?? json?.error?.data?.message ?? json?.message;
     if (message) return `${who} error (${res.status}): ${message}`;
   } catch {
     /* not JSON */
