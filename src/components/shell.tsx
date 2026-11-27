@@ -1,10 +1,10 @@
 /**
  * App shell — sidebar on desktop, top bar on mobile.
- * Three destinations only: Library, Focus, Inbox. Nothing else to learn.
+ * Four destinations only: Library, Focus, Inbox, Chat. Nothing else to learn.
  */
 "use client";
 
-import { Inbox, LibraryBig, Target, type LucideIcon } from "lucide-react";
+import { Bot, Inbox, LibraryBig, Target, type LucideIcon } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "@/lib/services";
@@ -14,6 +14,7 @@ const NAV: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/", label: "Library", icon: LibraryBig },
   { href: "/focus", label: "Focus", icon: Target },
   { href: "/inbox", label: "Inbox", icon: Inbox },
+  { href: "/chat", label: "Chat", icon: Bot },
 ];
 
 function Brand({ compact = false }: { compact?: boolean }) {

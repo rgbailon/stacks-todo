@@ -16,7 +16,7 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
   },
-  envPrefix: ["VITE_", "TAURI_"],
+  envPrefix: ["VITE_", "TAURI_", "ANTHROPIC_", "OPENCODE_"],
   build: {
     target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
