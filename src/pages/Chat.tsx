@@ -3,12 +3,13 @@
  * OpenCode server), ask for projects and tasks, watch the tool calls run.
  * Everything it creates lands in the same library the rest of the app reads.
  */
-import { AlertCircle, Bot, RotateCcw, Send, Sparkles, Wrench } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, Bookmark, Bot, RotateCcw, Send, Sparkles, Wrench } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { PromptLibrary } from "@/components/prompt-library";
 import { Button, Chip, EmptyState, Spinner, Textarea } from "@/components/ui";
 import { runAgent, type AgentToolEvent } from "@/lib/ai/agent";
 import { providersFromEnv, readAiEnv, type ChatProvider, type ChatTurn } from "@/lib/ai/providers";
-import { toast } from "@/lib/toast";
+import { promptStore } from "@/lib/prompts";
 
 type Entry =
   | { kind: "user"; text: string }
@@ -33,13 +34,27 @@ export default function ChatPage() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const turnsRef = useRef<ChatTurn[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  const savedPrompts = useSyncExternalStore(promptStore.subscribe, promptStore.getSnapshot, promptStore.getSnapshot);
+  const recentPrompts = useMemo(
+    () => [...savedPrompts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 4),
+    [savedPrompts],
+  );
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [entries, busy]);
+
+  /** Drop a saved prompt into the composer (appending to anything already there). */
+  const insertPrompt = (body: string) => {
+    setInput((prev) => (prev ? `${prev}\n\n${body}` : body));
+    setTimeout(() => composerRef.current?.focus(), 0);
+  };
 
   const send = async (raw: string) => {
     const text = raw.trim();
@@ -140,6 +155,9 @@ export default function ChatPage() {
               via {provider.label}
             </span>
           )}
+          <Button variant="ghost" size="sm" onClick={() => setLibraryOpen(true)}>
+            <Bookmark size={13} /> Prompts
+          </Button>
           <Button variant="ghost" size="sm" onClick={reset} disabled={busy || entries.length === 0}>
             <RotateCcw size={13} /> New chat
           </Button>
@@ -171,6 +189,28 @@ export default function ChatPage() {
                 </button>
               ))}
             </div>
+            {recentPrompts.length > 0 && (
+              <>
+                <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-soft">
+                  Your prompts
+                </p>
+                <div className="mt-2 flex flex-col gap-2">
+                  {recentPrompts.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => insertPrompt(p.body)}
+                      className="rounded-xl border border-dashed border-line bg-white/60 px-3.5 py-2.5 text-left transition hover:border-ink/30"
+                    >
+                      <span className="block truncate text-sm font-medium text-ink">{p.title}</span>
+                      <span className="mt-0.5 block truncate text-xs text-ink-soft">
+                        {p.body.trim() || "Empty prompt"}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         ) : (
           entries.map((entry, i) => <ChatEntry key={i} entry={entry} />)
@@ -191,6 +231,7 @@ export default function ChatPage() {
         }}
       >
         <Textarea
+          ref={composerRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -209,6 +250,8 @@ export default function ChatPage() {
         </Button>
       </form>
       <p className="mt-2 text-right text-[11px] text-ink-soft/70">⌘/Ctrl + Enter to send</p>
+
+      <PromptLibrary open={libraryOpen} onClose={() => setLibraryOpen(false)} onUse={insertPrompt} />
     </div>
   );
 }
