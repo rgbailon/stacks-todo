@@ -29,6 +29,10 @@ src/
 │   ├── types.ts         ← wire DTOs + constants (CATEGORIES, PROJECT_ICONS, statuses)
 │   ├── models.ts        ← domain classes: Project, Task, Note, Idea, TaskBoard, Workspace
 │   ├── services.ts      ← client API classes (BaseService → per-resource), exported as `api`
+│   ├── ai/
+│   │   ├── providers.ts ← ChatProvider interface + Anthropic (direct) and
+│   │   │                  OpenCode (env-wrapped local server) transports
+│   │   └── agent.ts     ← system prompt, Stacks tools, the tool-calling loop
 │   ├── palettes.ts      ← CoverTheme + PALETTES (book-cover identities)
 │   ├── markdown.tsx     ← MarkdownParser class + safe <Markdown/> renderer (no deps)
 │   ├── toast.tsx        ← ToastStore class + <Toaster/> (useSyncExternalStore)
@@ -49,6 +53,8 @@ src/
 | Want to…                        | Touch…                                   |
 | ------------------------------- | ---------------------------------------- |
 | Add a cover color               | `PALETTES` in `lib/palettes.ts`          |
+| Add an AI chat tool             | `createAppTools()` in `lib/ai/agent.ts`  |
+| Change AI env vars / providers  | `.env.example` + `lib/ai/providers.ts`   |
 | Add a category                  | `CATEGORIES` in `lib/types.ts`           |
 | Change how "up next" is chosen  | `TaskBoard` in `lib/models.ts`           |
 | Change task/note business rules | `WorkspaceService` in `server/workspace.ts` |

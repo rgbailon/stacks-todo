@@ -22,6 +22,42 @@ const EXPECTED_KEYS = {
   seed: [],
 };
 
+const NOW = "2026-01-01T00:00:00.000Z";
+
+const projectDto = (id, input = {}) => ({
+  id,
+  title: input.title ?? "Untitled project",
+  description: input.description ?? "",
+  category: input.category ?? "development",
+  palette: input.palette ?? "ember",
+  icon: input.icon ?? "🚀",
+  status: input.status ?? "active",
+  createdAt: NOW,
+  updatedAt: NOW,
+  lastOpenedAt: null,
+  stats: { total: 0, done: 0, doing: 0, notes: 0 },
+});
+
+const taskDto = (id, projectId, title) => ({
+  id,
+  projectId,
+  title,
+  status: "todo",
+  position: 1,
+  createdAt: NOW,
+  completedAt: null,
+});
+
+const noteDto = (id, projectId, input = {}) => ({
+  id,
+  projectId,
+  title: input.title ?? "Untitled note",
+  content: input.content ?? "",
+  pinned: input.pinned ?? false,
+  createdAt: NOW,
+  updatedAt: NOW,
+});
+
 export async function invoke(cmd, args = {}) {
   const expected = EXPECTED_KEYS[cmd];
   if (!expected) throw new Error(`unknown command: ${cmd}`);
@@ -36,32 +72,20 @@ export async function invoke(cmd, args = {}) {
     case "list_ideas":
       return [];
     case "get_project":
-      return { project: { id: args.id }, tasks: [], notes: [] };
+      return { project: projectDto(args.id, { title: "Stub project" }), tasks: [], notes: [] };
+    case "create_project":
+      return projectDto(`p_${Date.now().toString(36)}`, args.input);
+    case "create_task":
+      return taskDto(`t_${Date.now().toString(36)}`, args.projectId, args.title);
+    case "create_note":
+    case "update_note":
+      return noteDto("n_1", args.projectId ?? "p_1", args.input ?? args.patch);
+    case "capture_idea":
+      return { id: `i_${Date.now().toString(36)}`, text: args.text, createdAt: NOW };
     case "focus":
       return { doing: [], onDeck: [] };
     case "seed":
       return { seeded: true };
-    case "create_note":
-    case "send_idea_to_project":
-      return {
-        id: "note-1",
-        projectId: args.projectId ?? args.id,
-        title: "note",
-        content: "",
-        pinned: false,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      };
-    case "create_task":
-      return {
-        id: "task-1",
-        projectId: args.projectId,
-        title: args.title,
-        status: "todo",
-        position: 1,
-        createdAt: "2026-01-01T00:00:00Z",
-        completedAt: null,
-      };
     default:
       return { id: "x", ok: true, seeded: false };
   }
