@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { PromptLibrary } from "@/components/prompt-library";
 import { Button, Chip, EmptyState, Spinner, Textarea } from "@/components/ui";
 import { runAgent, type AgentToolEvent } from "@/lib/ai/agent";
-import { providersFromEnv, readAiEnv, type ChatProvider, type ChatTurn, type OpenCodeModel } from "@/lib/ai/providers";
+import { providersFromEnv, readAiEnv, type AiEnv, type ChatProvider, type ChatTurn, type OpenCodeModel } from "@/lib/ai/providers";
 import { promptStore } from "@/lib/prompts";
 
 type Entry =
@@ -27,7 +27,24 @@ const SUGGESTIONS = [
 const toolLabel = (name: string) => name.replace(/_/g, " ");
 
 export default function ChatPage() {
-  const env = useMemo(() => readAiEnv(), []);
+  // Allow overriding the OpenCode connection at runtime (stored in localStorage)
+  // so the app keeps working even if the build-time .env is stale.
+  const [connUrl, setConnUrl] = useState<string>(() => {
+    try { return localStorage.getItem("stacks.opencode.url") || readAiEnv().opencodeUrl || ""; }
+    catch { return readAiEnv().opencodeUrl || ""; }
+  });
+  const [connPw, setConnPw] = useState<string>(() => {
+    try { return localStorage.getItem("stacks.opencode.password") || readAiEnv().opencodePassword || ""; }
+    catch { return readAiEnv().opencodePassword || ""; }
+  });
+  const env = useMemo<AiEnv>(() => {
+    const base = readAiEnv();
+    return {
+      ...base,
+      opencodeUrl: connUrl.trim().replace(/\/+$/, "") || base.opencodeUrl,
+      opencodePassword: connPw || base.opencodePassword,
+    };
+  }, [connUrl, connPw]);
   const providers = useMemo(() => providersFromEnv(env), [env]);
   const [providerId, setProviderId] = useState(() => providers[0]?.id ?? "");
   const provider: ChatProvider | null = providers.find((p) => p.id === providerId) ?? providers[0] ?? null;
@@ -35,12 +52,15 @@ export default function ChatPage() {
   const [models, setModels] = useState<OpenCodeModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     try {
-      return localStorage.getItem("stacks.chat.model") || env.opencodeModel || "";
+      return localStorage.getItem("stacks.chat.model") || "";
     } catch {
-      return env.opencodeModel || "";
+      return "";
     }
   });
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [draftUrl, setDraftUrl] = useState(connUrl);
+  const [draftPw, setDraftPw] = useState(connPw);
 
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
@@ -230,6 +250,9 @@ export default function ChatPage() {
           {provider?.id === "opencode" && modelsLoading && (
             <span className="text-[11px] text-ink-soft/70">loading models…</span>
           )}
+          <Button variant="ghost" size="sm" onClick={() => { setDraftUrl(connUrl); setDraftPw(connPw); setSettingsOpen((v) => !v); }}>
+            <Wrench size={13} /> Connection
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setLibraryOpen(true)}>
             <Bookmark size={13} /> Prompts
           </Button>
@@ -238,6 +261,60 @@ export default function ChatPage() {
           </Button>
         </div>
       </header>
+
+      {settingsOpen && (
+        <div className="mt-4 rounded-2xl border border-line bg-card p-4">
+          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-soft">OpenCode connection</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="block text-xs text-ink-soft">
+              Server URL
+              <input
+                value={draftUrl}
+                onChange={(e) => setDraftUrl(e.target.value)}
+                placeholder="http://127.0.0.1:4097"
+                className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 font-mono text-xs text-ink outline-none focus:border-ink/40"
+              />
+            </label>
+            <label className="block text-xs text-ink-soft">
+              Password
+              <input
+                type="password"
+                value={draftPw}
+                onChange={(e) => setDraftPw(e.target.value)}
+                placeholder="password"
+                className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 font-mono text-xs text-ink outline-none focus:border-ink/40"
+              />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              variant="accent"
+              size="sm"
+              onClick={() => {
+                const url = draftUrl.trim().replace(/\/+$/, "");
+                const pw = draftPw.trim();
+                try {
+                  if (url) localStorage.setItem("stacks.opencode.url", url);
+                  else localStorage.removeItem("stacks.opencode.url");
+                  if (pw) localStorage.setItem("stacks.opencode.password", pw);
+                  else localStorage.removeItem("stacks.opencode.password");
+                } catch { /* ignore */ }
+                setConnUrl(url);
+                setConnPw(pw);
+                setSettingsOpen(false);
+              }}
+            >
+              Save & connect
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setSettingsOpen(false)}>
+              Cancel
+            </Button>
+            <span className="text-[11px] text-ink-soft/70">
+              Stored in this browser only. Overrides the build-time .env.
+            </span>
+          </div>
+        </div>
+      )}
 
       <div
         ref={scrollRef}
